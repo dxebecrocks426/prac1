@@ -1,0 +1,21 @@
+[features]
+resolution = true
+skip-lint = false
+
+[programs.localnet]
+# No program needed for these examples - they demonstrate SDK usage
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "Localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+# Examples can be run directly with bun
+# bun examples/01_basic_setup.ts
+
+[test]
+startup_wait = 10000
+

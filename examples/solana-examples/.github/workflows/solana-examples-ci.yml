@@ -1,0 +1,292 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches:
+      - main
+
+jobs:
+  lint-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/gq-godark/gdx-golden-image:latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        run: |
+          # Ensure Rust is available and default toolchain is set
+          export PATH="$HOME/.cargo/bin:$PATH"
+          # Check if stable toolchain exists, install if needed, then set as default
+          if ! rustup toolchain list | grep -q "stable"; then
+            echo "Installing stable Rust toolchain..."
+            rustup install stable
+          fi
+          rustup default stable
+          rustup update stable || true
+
+      - name: Verify installations
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustc --version
+          cargo --version
+          export PATH="$HOME/.local/share/solana/install/active_release/bin:$HOME/.cargo/bin:$PATH"
+          solana --version
+          # Activate Anchor version manager
+          yes | avm use 0.32.1 || true
+          anchor --version
+
+      - name: Create default Solana wallet
+        run: |
+          export PATH="$HOME/.local/share/solana/install/active_release/bin:$HOME/.cargo/bin:$PATH"
+          mkdir -p ~/.config/solana
+          if [ ! -f ~/.config/solana/id.json ]; then
+            solana-keygen new --outfile ~/.config/solana/id.json --no-bip39-passphrase --force
+          fi
+
+          # Use environment variable for RPC URL if set
+          RPC_URL="${SOLANA_RPC_URL:-http://127.0.0.1:8899}"
+          solana config set --url "$RPC_URL"
+
+      - name: Start Solana Test Validator
+        if: env.USE_EXTERNAL_VALIDATOR != 'true'
+        run: |
+          export PATH="$HOME/.local/share/solana/install/active_release/bin:$HOME/.cargo/bin:$PATH"
+
+          # Clean up any existing validator processes
+          pkill -9 -f solana-test-validator || true
+          sleep 1
+
+          # Start validator in background with nohup to ensure it persists across steps
+          # Store validator files in solana-examples directory
+          cd solana-examples
+          nohup solana-test-validator --reset --quiet > validator.log 2>&1 &
+          VALIDATOR_PID=$!
+          echo $VALIDATOR_PID > validator.pid
+          echo "Started validator with PID: $VALIDATOR_PID"
+
+          # Verify the process is running
+          if ! kill -0 $VALIDATOR_PID 2>/dev/null; then
+            echo "❌ Validator process failed to start"
+            cat validator.log || true
+            exit 1
+          fi
+
+          # Wait for validator to be ready
+          echo "Waiting for validator to start..."
+          for i in {1..60}; do
+            if solana cluster-version --url http://127.0.0.1:8899 > /dev/null 2>&1; then
+              echo "✓ Validator is ready!"
+              break
+            fi
+            if [ $i -eq 60 ]; then
+              echo "❌ Validator failed to start within 60 seconds"
+              echo "Validator log:"
+              cat validator.log || true
+              echo "Checking if process is still running:"
+              ps aux | grep solana-test-validator || true
+              exit 1
+            fi
+            sleep 1
+          done
+
+          # Fund the default wallet
+          echo "Funding default wallet..."
+          solana airdrop 10 --url http://127.0.0.1:8899 || true
+
+          # Verify validator is still running
+          if ! kill -0 $VALIDATOR_PID 2>/dev/null; then
+            echo "❌ Validator process died unexpectedly"
+            cat validator.log || true
+            exit 1
+          fi
+          cd ..
+        env:
+          RUST_LOG: error
+
+      - name: Build rust-scripts
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: true
+        run: |
+          export PATH="$HOME/.cargo/bin:$HOME/.local/share/solana/install/active_release/bin:$PATH"
+          export RUSTUP_TOOLCHAIN=stable
+          # Ensure sccache is used (should be auto-configured via Cargo config)
+          export RUSTC_WRAPPER=sccache
+          export CARGO_BUILD_JOBS=0
+          cd solana-examples/rust-scripts
+          cargo build --release
+          # Show sccache stats
+          echo "📊 sccache statistics after rust-scripts build:"
+          sccache --show-stats || echo "sccache stats unavailable"
+
+      - name: Build anchor-examples/examples-rust
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: true
+        run: |
+          export PATH="$HOME/.cargo/bin:$HOME/.local/share/solana/install/active_release/bin:$PATH"
+          export RUSTUP_TOOLCHAIN=stable
+          # Ensure sccache is used (should be auto-configured via Cargo config)
+          export RUSTC_WRAPPER=sccache
+          export CARGO_BUILD_JOBS=0
+          cd solana-examples/anchor-examples/examples-rust
+          cargo build --release
+          # Show sccache stats
+          echo "📊 sccache statistics after anchor-examples build:"
+          sccache --show-stats || echo "sccache stats unavailable"
+
+      - name: Verify validator is accessible
+        run: |
+          export PATH="$HOME/.local/share/solana/install/active_release/bin:$HOME/.cargo/bin:$PATH"
+          RPC_URL="${SOLANA_RPC_URL:-http://127.0.0.1:8899}"
+
+          # Verify validator is still running before running examples
+          if [ "$USE_EXTERNAL_VALIDATOR" != "true" ]; then
+            if [ -f solana-examples/validator.pid ]; then
+              VALIDATOR_PID=$(cat solana-examples/validator.pid)
+              if ! kill -0 $VALIDATOR_PID 2>/dev/null; then
+                echo "❌ Error: Validator process died before running examples"
+                if [ -f solana-examples/validator.log ]; then
+                  echo "Validator log:"
+                  tail -50 solana-examples/validator.log || true
+                fi
+                exit 1
+              fi
+              echo "✓ Validator is running (PID: $VALIDATOR_PID)"
+            fi
+          else
+            echo "Using external validator at $RPC_URL"
+          fi
+
+          # Verify validator is accessible
+          if ! solana cluster-version --url "$RPC_URL" > /dev/null 2>&1; then
+            echo "❌ Error: Validator is not accessible at $RPC_URL"
+            if [ "$USE_EXTERNAL_VALIDATOR" == "true" ]; then
+              echo "Please check that your external validator is running and accessible."
+              echo "If running on host, ensure it's listening on the correct interface."
+            fi
+            exit 1
+          fi
+
+      - name: Run rust-scripts examples
+        run: |
+          export PATH="$HOME/.cargo/bin:$HOME/.local/share/solana/install/active_release/bin:$PATH"
+          export RUSTC_WRAPPER=sccache
+          export CARGO_BUILD_JOBS=0
+          RPC_URL="${SOLANA_RPC_URL:-http://127.0.0.1:8899}"
+          cd solana-examples/rust-scripts
+
+          echo "Running rust-scripts examples..."
+
+          # Connect to localnet
+          echo "→ Testing connect..."
+          cargo run --release -- connect
+
+          # Create account
+          echo "→ Testing create-account..."
+          cargo run --release -- create-account
+
+          # Get wallet address for balance/airdrop tests
+          WALLET_ADDRESS=$(solana address --url "$RPC_URL" 2>/dev/null || echo "")
+          if [ -n "$WALLET_ADDRESS" ]; then
+            echo "Using wallet address: $WALLET_ADDRESS"
+            
+            # Get balance
+            echo "→ Testing balance..."
+            cargo run --release -- balance "$WALLET_ADDRESS"
+            
+            # Request airdrop
+            echo "→ Testing airdrop..."
+            cargo run --release -- airdrop "$WALLET_ADDRESS" 1
+          else
+            echo "⚠️  Could not get wallet address, skipping balance/airdrop tests"
+          fi
+
+          # PDA basics
+          echo "→ Testing pda-basics..."
+          cargo run --release -- pda-basics
+
+          # Token basics
+          echo "→ Testing token-basics..."
+          cargo run --release -- token-basics
+          # Show sccache stats after rust-scripts examples
+          echo "📊 sccache statistics after rust-scripts examples:"
+          sccache --show-stats || echo "sccache stats unavailable"
+
+      - name: Run anchor-examples binaries
+        run: |
+          export PATH="$HOME/.cargo/bin:$HOME/.local/share/solana/install/active_release/bin:$PATH"
+          export RUSTC_WRAPPER=sccache
+          export CARGO_BUILD_JOBS=0
+          RPC_URL="${SOLANA_RPC_URL:-http://127.0.0.1:8899}"
+          cd solana-examples/anchor-examples/examples-rust
+
+          echo "Running anchor-examples binaries..."
+
+          # Run each binary example
+          echo "→ Running 01_basic_setup..."
+          cargo run --release --bin 01_basic_setup
+
+          echo "→ Running 02_account_operations..."
+          cargo run --release --bin 02_account_operations
+
+          echo "→ Running 03_transactions..."
+          cargo run --release --bin 03_transactions
+
+          echo "→ Running 04_pda_examples..."
+          cargo run --release --bin 04_pda_examples
+
+          echo "→ Running 05_token_operations..."
+          cargo run --release --bin 05_token_operations
+          # Show final sccache stats
+          echo "📊 Final sccache statistics:"
+          sccache --show-stats || echo "sccache stats unavailable"
+
+      - name: Show validator logs on failure
+        if: failure() && env.USE_EXTERNAL_VALIDATOR != 'true'
+        run: |
+          cd solana-examples
+          if [ -f validator.log ]; then
+            echo "=== Validator Logs ==="
+            tail -100 validator.log || true
+          fi
+          if [ -f validator.pid ]; then
+            VALIDATOR_PID=$(cat validator.pid)
+            echo "Validator PID was: $VALIDATOR_PID"
+            ps aux | grep solana-test-validator || true
+          fi
+
+      - name: Stop validator
+        if: always() && env.USE_EXTERNAL_VALIDATOR != 'true'
+        run: |
+          cd solana-examples
+          echo "Stopping validator..."
+
+          # Try graceful shutdown first
+          if [ -f validator.pid ]; then
+            VALIDATOR_PID=$(cat validator.pid)
+            echo "Attempting to stop validator PID: $VALIDATOR_PID"
+            kill $VALIDATOR_PID 2>/dev/null || true
+            sleep 2
+            
+            # Force kill if still running
+            if kill -0 $VALIDATOR_PID 2>/dev/null; then
+              echo "Force killing validator..."
+              kill -9 $VALIDATOR_PID 2>/dev/null || true
+            fi
+            rm -f validator.pid
+          fi
+
+          # Clean up any remaining validator processes
+          pkill -9 -f solana-test-validator || true
+          sleep 1
+
+          # Verify cleanup
+          if pgrep -f solana-test-validator > /dev/null; then
+            echo "⚠️  Warning: Some validator processes may still be running"
+          else
+            echo "✓ Validator stopped successfully"
+          fi

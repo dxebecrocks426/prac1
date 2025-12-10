@@ -1,0 +1,32 @@
+[submodule "solana-examples"]
+	path = solana-examples
+	url = https://github.com/gq-godark/solana-examples.git
+	branch = feature/add-unit-test
+[submodule "gdx-settlement-relayer"]
+	path = services/gdx-settlement-relayer
+	url = https://github.com/gq-godark/gdx-settlement-relayer.git
+	branch = feature/add-unit-test
+[submodule "gdx-position-mgmt"]
+	path = contracts/programs/gdx-position-mgmt
+	url = https://github.com/gq-godark/gdx-position-mgmt.git
+	branch = feature/add-unit-test
+[submodule "gdx-oracle"]
+	path = contracts/programs/gdx-oracle
+	url = https://github.com/gq-godark/gdx-oracle.git
+	branch = feature/add-unit-test
+[submodule "gdx-liquidation-engine"]
+	path = services/gdx-liquidation-engine
+	url = https://github.com/gq-godark/gdx-liquidation-engine.git
+	branch = feature/add-unit-test
+[submodule "gdx-funding-rate"]
+	path = contracts/programs/gdx-funding-rate
+	url = https://github.com/gq-godark/gdx-funding-rate.git
+	branch = feature/add-unit-test
+[submodule "gdx-ephemeral-vault"]
+	path = contracts/programs/gdx-ephemeral-vault
+	url = https://github.com/gq-godark/gdx-ephemeral-vault.git
+	branch = feature/add-unit-test
+[submodule "gdx-collateral-vault"]
+	path = contracts/programs/gdx-collateral-vault
+	url = https://github.com/gq-godark/gdx-collateral-vault.git
+	branch = feature/add-unit-tests

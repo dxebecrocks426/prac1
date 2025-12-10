@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  # --------------------------------------------------------------------------
+  # ZONE C: Local Blockchain (Solana Validator)
+  # --------------------------------------------------------------------------
+  validator:
+    image: solanalabs/solana:stable
+    container_name: gdx-validator
+    ports:
+      - "8899:8899" # RPC
+      - "8900:8900" # PubSub
+    command: >
+      solana-test-validator 
+      --reset 
+      --ledger /ledger
+      --rpc-port 8899
+      --bind-address 0.0.0.0
+    volumes:
+      - validator-ledger:/ledger
+
+  # --------------------------------------------------------------------------
+  # ZONE A: Mock Matching Engine (C++ Stub)
+  # --------------------------------------------------------------------------
+  mock-engine:
+    image: node:18-alpine
+    container_name: gdx-engine
+    working_dir: /app
+    ports:
+      - "8080:8080" # WebSocket Feed
+    volumes:
+      - ./web/mock:/app
+    environment:
+      - SHARD_ID=all
+      - REDIS_URL=redis://redis:6379
+    command: ["npm", "run", "start:mock"]
+    depends_on:
+      - redis
+
+  # --------------------------------------------------------------------------
+  # ZONE B: Infrastructure Services
+  # --------------------------------------------------------------------------
+  redis:
+    image: redis:alpine
+    container_name: gdx-redis
+    ports:
+      - "6379:6379"
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: gdx-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: godark
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  # --------------------------------------------------------------------------
+  # ZONE B: Settlement Relayer
+  # --------------------------------------------------------------------------
+  relayer:
+    # In real dev, this would build from ./services/relayer
+    # utilizing a multi-stage Dockerfile
+    image: rust:1.75-slim
+    container_name: gdx-relayer
+    working_dir: /app
+    volumes:
+      - ./services/relayer:/app
+    command: ["cargo", "run"]
+    environment:
+      - SOLANA_RPC_URL=http://validator:8899
+      - ENGINE_WS_URL=ws://mock-engine:8080
+    depends_on:
+      - validator
+      - mock-engine
+
+volumes:
+  validator-ledger:
+  postgres-data:
+

@@ -1,0 +1,34 @@
+[package]
+name = "anchor-examples-rust"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "01_basic_setup"
+path = "src/01_basic_setup.rs"
+
+[[bin]]
+name = "02_account_operations"
+path = "src/02_account_operations.rs"
+
+[[bin]]
+name = "03_transactions"
+path = "src/03_transactions.rs"
+
+[[bin]]
+name = "04_pda_examples"
+path = "src/04_pda_examples.rs"
+
+[[bin]]
+name = "05_token_operations"
+path = "src/05_token_operations.rs"
+
+[dependencies]
+solana-client = "1.18"
+solana-sdk = "1.18"
+solana-program = "1.18"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+bs58 = "0.5"
+spl-token = "4.0"
+

@@ -1,0 +1,86 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "GoDark Global Configuration",
+  "description": "Centralized configuration for Zone A (Matching Engine) and Zone B (Relayers)",
+  "type": "object",
+  "required": [
+    "markets",
+    "shards",
+    "feature_flags"
+  ],
+  "properties": {
+    "markets": {
+      "type": "array",
+      "description": "List of active trading pairs",
+      "items": {
+        "type": "object",
+        "required": [
+          "symbol",
+          "shard_id",
+          "base_asset",
+          "quote_asset"
+        ],
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "pattern": "^[A-Z]+-USDT$",
+            "description": "e.g. BTC-USDT"
+          },
+          "shard_id": {
+            "type": "integer",
+            "description": "The Zone A server ID responsible for this market"
+          },
+          "tick_size": {
+            "type": "number",
+            "description": "Minimum price increment"
+          },
+          "min_order_size": {
+            "type": "number",
+            "description": "Minimum notional value"
+          }
+        }
+      }
+    },
+    "shards": {
+      "type": "array",
+      "description": "Definition of Matching Engine Shards",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "endpoint"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "endpoint": {
+            "type": "string",
+            "format": "uri"
+          },
+          "region": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "feature_flags": {
+      "type": "object",
+      "description": "Global toggles for phased rollouts",
+      "properties": {
+        "maintenance_mode": {
+          "type": "boolean",
+          "default": false
+        },
+        "enable_new_matching_algo": {
+          "type": "boolean",
+          "default": false
+        },
+        "max_leverage_multiplier": {
+          "type": "integer",
+          "default": 1000
+        }
+      }
+    }
+  }
+}

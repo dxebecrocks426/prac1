@@ -1,0 +1,323 @@
+# Prebaked Docker image for faster local CI runs
+# Based on rust:slim (Debian-based, much lighter than Ubuntu)
+# Rust is pre-installed, saving ~500MB+
+
+FROM rust:slim
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH="/root/.cargo/bin:/root/.local/share/solana/install/active_release/bin:${PATH}"
+
+# Install system dependencies (minimal set)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    git \
+    ca-certificates \
+    pkg-config \
+    libssl-dev \
+    file \
+    bzip2 \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Rust is already installed in rust:slim, just ensure latest stable
+RUN rustup update stable && \
+    rustup default stable
+
+# Install Solana CLI using Anza's official installer
+# Anza maintains Agave (Solana validator) and provides the official installer
+# Using stable channel ensures we get the latest stable release (currently 3.0.11+)
+# The installer handles versioning automatically and is more reliable than manual downloads
+RUN set -e && \
+    SOLANA_BIN="/root/.local/share/solana/install/active_release/bin" && \
+    echo "Installing Solana CLI using Anza's official installer..." && \
+    INSTALLED=false && \
+    \
+    # Strategy 1: Use Anza's official installer (most reliable) \
+    for attempt in 1 2 3; do \
+    echo "Anza installer attempt $attempt/3..." && \
+    if sh -c "$(curl --retry 3 --retry-delay 10 --connect-timeout 30 --max-time 900 --progress-bar -sSfL https://release.anza.xyz/stable/install)"; then \
+    if [ -f "${SOLANA_BIN}/solana" ]; then \
+    INSTALLED=true && \
+    echo "✓ Solana installed via Anza installer" && \
+    ${SOLANA_BIN}/solana --version && \
+    break; \
+    fi; \
+    fi; \
+    if [ "$INSTALLED" != "true" ]; then \
+    echo "Attempt $attempt failed, retrying in 10 seconds..." && \
+    sleep 10; \
+    fi; \
+    done && \
+    \
+    # Strategy 2: Fallback to GitHub releases if installer fails \
+    if [ "$INSTALLED" != "true" ]; then \
+    echo "Anza installer failed, trying GitHub releases..." && \
+    SOLANA_VERSION="3.0.11" && \
+    mkdir -p /root/.local/share/solana/install/releases/${SOLANA_VERSION} && \
+    for attempt in 1 2 3; do \
+    echo "GitHub release attempt $attempt/3..." && \
+    rm -f /tmp/solana.tar.bz2 && \
+    if curl --retry 2 --retry-delay 10 --connect-timeout 30 --max-time 900 \
+    --fail --location --progress-bar \
+    "https://github.com/anza-xyz/agave/releases/download/v${SOLANA_VERSION}/solana-release-x86_64-unknown-linux-gnu.tar.bz2" \
+    -o /tmp/solana.tar.bz2 && \
+    [ -s /tmp/solana.tar.bz2 ] && \
+    file /tmp/solana.tar.bz2 | grep -q "bzip2"; then \
+    echo "Download successful, extracting..." && \
+    cd /root/.local/share/solana/install/releases/${SOLANA_VERSION} && \
+    tar -xjf /tmp/solana.tar.bz2 && \
+    ln -sf /root/.local/share/solana/install/releases/${SOLANA_VERSION}/solana-release /root/.local/share/solana/install/active_release && \
+    rm /tmp/solana.tar.bz2 && \
+    if [ -f "${SOLANA_BIN}/solana" ]; then \
+    INSTALLED=true && \
+    echo "✓ Solana installed via GitHub release" && \
+    ${SOLANA_BIN}/solana --version && \
+    break; \
+    fi; \
+    else \
+    echo "Attempt $attempt failed, retrying in 10 seconds..." && \
+    sleep 10; \
+    rm -f /tmp/solana.tar.bz2; \
+    fi; \
+    done; \
+    fi && \
+    \
+    # Fail if installation didn't succeed \
+    if [ "$INSTALLED" != "true" ] || [ ! -f "${SOLANA_BIN}/solana" ]; then \
+    echo "❌ ERROR: Solana CLI installation failed after all attempts" && \
+    echo "   This is a required dependency for the CI image" && \
+    exit 1; \
+    fi && \
+    echo "✓ Solana CLI verified: $(ls -lh ${SOLANA_BIN}/solana | awk '{print $5}')"
+
+# Pre-install Solana platform-tools to avoid download during anchor build
+# Platform-tools are required by cargo-build-sbf and are cached in ~/.cache/solana/<VERSION>/platform-tools/
+# Pre-installing them avoids network issues during CI runs
+# Using latest version from anza-xyz/platform-tools repository
+RUN PLATFORM_TOOLS_VERSION="1.52" && \
+    PLATFORM_TOOLS_CACHE_DIR="/root/.cache/solana/v${PLATFORM_TOOLS_VERSION}/platform-tools" && \
+    mkdir -p "${PLATFORM_TOOLS_CACHE_DIR}" && \
+    echo "Pre-installing Solana platform-tools v${PLATFORM_TOOLS_VERSION} (351MB, may take a while)..." && \
+    INSTALLED=false && \
+    for attempt in 1 2 3; do \
+    echo "Platform-tools download attempt $attempt/3..." && \
+    rm -f /tmp/platform-tools.tar.bz2 && \
+    curl --retry 2 --retry-delay 10 --connect-timeout 30 --max-time 900 --fail --location --progress-bar "https://github.com/anza-xyz/platform-tools/releases/download/v${PLATFORM_TOOLS_VERSION}/platform-tools-linux-x86_64.tar.bz2" -o /tmp/platform-tools.tar.bz2 || (echo "Download failed" && sleep 10 && continue) && \
+    [ -f /tmp/platform-tools.tar.bz2 ] || (echo "Downloaded file does not exist" && sleep 10 && continue) && \
+    [ -s /tmp/platform-tools.tar.bz2 ] || (echo "Downloaded file is empty" && sleep 10 && continue) && \
+    FILE_SIZE=$(stat -c%s /tmp/platform-tools.tar.bz2 2>/dev/null || stat -f%z /tmp/platform-tools.tar.bz2 2>/dev/null || echo "0") && \
+    echo "Downloaded file size: ${FILE_SIZE} bytes" && \
+    [ "$FILE_SIZE" -gt 100000000 ] || (echo "File too small, likely corrupted (${FILE_SIZE} bytes)" && sleep 10 && continue) && \
+    file /tmp/platform-tools.tar.bz2 | grep -q "bzip2" || (echo "File type validation failed" && sleep 10 && continue) && \
+    echo "Testing archive integrity (non-blocking)..." && \
+    if tar -tjf /tmp/platform-tools.tar.bz2 > /dev/null 2>&1; then \
+    echo "Archive integrity test passed"; \
+    else \
+    echo "Archive integrity test failed, but continuing with extraction..."; \
+    fi && \
+    [ -f /tmp/platform-tools.tar.bz2 ] || (echo "File disappeared after integrity test" && sleep 10 && continue) && \
+    echo "Verifying extraction directory exists..." && \
+    mkdir -p "${PLATFORM_TOOLS_CACHE_DIR}" && \
+    [ -d "${PLATFORM_TOOLS_CACHE_DIR}" ] || (echo "Failed to create extraction directory" && sleep 10 && continue) && \
+    echo "Download complete, extracting..." && \
+    cd "${PLATFORM_TOOLS_CACHE_DIR}" && \
+    [ -f /tmp/platform-tools.tar.bz2 ] || (echo "File disappeared before extraction" && cd / && sleep 10 && continue) && \
+    tar -xjf /tmp/platform-tools.tar.bz2 2>&1 || (echo "Extraction failed, file may be corrupted" && cd / && rm -f /tmp/platform-tools.tar.bz2 && sleep 10 && continue) && \
+    cd / && \
+    rm -f /tmp/platform-tools.tar.bz2 && \
+    # Handle nested platform-tools directory structure (archive may contain platform-tools/ as top-level dir) \
+    if [ -d "${PLATFORM_TOOLS_CACHE_DIR}/platform-tools" ] && [ ! -f "${PLATFORM_TOOLS_CACHE_DIR}/llvm/bin/llc" ]; then \
+    echo "Archive contains nested platform-tools directory, moving contents up..." && \
+    mv "${PLATFORM_TOOLS_CACHE_DIR}/platform-tools"/* "${PLATFORM_TOOLS_CACHE_DIR}/" 2>/dev/null || true && \
+    rmdir "${PLATFORM_TOOLS_CACHE_DIR}/platform-tools" 2>/dev/null || true; \
+    fi && \
+    ([ -f "${PLATFORM_TOOLS_CACHE_DIR}/llvm/bin/llc" ] || [ -f "${PLATFORM_TOOLS_CACHE_DIR}/platform-tools/llvm/bin/llc" ]) || (echo "Extracted files not found in expected location" && sleep 10 && continue) && \
+    INSTALLED=true && \
+    echo "✓ Platform-tools pre-installed successfully" && \
+    find "${PLATFORM_TOOLS_CACHE_DIR}" -type f | head -5 && \
+    break; \
+    done && \
+    if [ "$INSTALLED" != "true" ]; then \
+    echo "❌ ERROR: Platform-tools installation failed after all attempts" && \
+    echo "   This is a required dependency for Anchor builds" && \
+    exit 1; \
+    fi
+
+# Install Anchor CLI (use latest stable version)
+# Install avm first, then use it to install latest Anchor
+# Required dependency - build will fail if installation doesn't succeed
+RUN set -e && \
+    export PATH="/root/.cargo/bin:$PATH" && \
+    export CARGO_NET_GIT_FETCH_WITH_CLI=true && \
+    AVM_INSTALLED=false && \
+    echo "Installing Anchor Version Manager (avm)..." && \
+    \
+    # Install avm with retries \
+    for attempt in 1 2 3; do \
+    echo "avm installation attempt $attempt/3..." && \
+    if cargo install --git https://github.com/coral-xyz/anchor avm --locked --force; then \
+    AVM_INSTALLED=true && \
+    echo "✓ avm installed successfully" && \
+    break; \
+    else \
+    echo "Attempt $attempt failed, retrying in 10 seconds..." && \
+    sleep 10; \
+    fi; \
+    done && \
+    \
+    # Fail if avm installation didn't succeed \
+    if [ "$AVM_INSTALLED" != "true" ]; then \
+    echo "❌ ERROR: avm installation failed after all attempts" && \
+    echo "   This is a required dependency for Anchor builds" && \
+    exit 1; \
+    fi && \
+    \
+    # Install latest Anchor version using avm \
+    echo "Installing latest Anchor version..." && \
+    ANCHOR_INSTALLED=false && \
+    for attempt in 1 2 3; do \
+    echo "Anchor installation attempt $attempt/3..." && \
+    if avm install latest && \
+    avm use latest; then \
+    ANCHOR_PATH=$(which anchor 2>/dev/null || echo "") && \
+    if [ -n "$ANCHOR_PATH" ] && anchor --version > /dev/null 2>&1; then \
+    ANCHOR_INSTALLED=true && \
+    echo "✓ Anchor CLI installed successfully at $ANCHOR_PATH" && \
+    anchor --version && \
+    break; \
+    else \
+    echo "Anchor installed but not in PATH, checking avm directory..." && \
+    AVM_ANCHOR_PATH=$(find ~/.avm -name anchor -type f 2>/dev/null | head -1) && \
+    if [ -n "$AVM_ANCHOR_PATH" ] && "$AVM_ANCHOR_PATH" --version > /dev/null 2>&1; then \
+    ANCHOR_INSTALLED=true && \
+    echo "✓ Anchor CLI found at $AVM_ANCHOR_PATH" && \
+    "$AVM_ANCHOR_PATH" --version && \
+    break; \
+    fi; \
+    fi; \
+    fi; \
+    if [ "$ANCHOR_INSTALLED" != "true" ]; then \
+    echo "Attempt $attempt failed, retrying in 10 seconds..." && \
+    sleep 10; \
+    fi; \
+    done && \
+    \
+    # Fail if Anchor installation didn't succeed \
+    ANCHOR_CMD=$(which anchor 2>/dev/null || find ~/.avm -name anchor -type f 2>/dev/null | head -1 || echo "") && \
+    if [ -z "$ANCHOR_CMD" ] || ! "$ANCHOR_CMD" --version > /dev/null 2>&1; then \
+    echo "❌ ERROR: Anchor CLI installation failed after all attempts" && \
+    echo "   This is a required dependency for the CI image" && \
+    exit 1; \
+    fi && \
+    echo "✓ Anchor CLI verified at $ANCHOR_CMD" && \
+    # Make Anchor version persistent by setting it in shell profile
+    echo 'export PATH="/root/.cargo/bin:$PATH"' >> ~/.bashrc && \
+    echo 'avm use 0.32.1 > /dev/null 2>&1 || true' >> ~/.bashrc && \
+    # Also set it for sh (used by GitHub Actions)
+    echo 'export PATH="/root/.cargo/bin:$PATH"' >> ~/.profile && \
+    echo 'avm use 0.32.1 > /dev/null 2>&1 || true' >> ~/.profile
+
+# Install sccache for faster compilation caching
+# sccache caches compiled artifacts to dramatically speed up subsequent builds
+RUN set -e && \
+    export PATH="/root/.cargo/bin:$PATH" && \
+    echo "Installing sccache..." && \
+    cargo install sccache --locked && \
+    echo "✓ sccache installed"
+
+# Configure Cargo for faster builds
+# Enable sccache, incremental compilation, and optimize build settings
+# Cargo uses all available CPU cores by default for parallel compilation
+RUN mkdir -p /root/.cargo && \
+    printf '%s\n' \
+    '[build]' \
+    'rustc-wrapper = "sccache"' \
+    'incremental = true' \
+    '' \
+    '[net]' \
+    'git-fetch-with-cli = true' \
+    '' \
+    '[target.x86_64-unknown-linux-gnu]' \
+    'linker = "cc"' > /root/.cargo/config.toml && \
+    echo "✓ Cargo configured for faster builds (parallel compilation enabled - uses all cores by default)"
+
+# Install BPF target for Solana program compilation
+RUN set -e && \
+    export PATH="/root/.cargo/bin:$PATH" && \
+    echo "Installing BPF target (bpfel-unknown-unknown) for Solana program compilation..." && \
+    rustup target add bpfel-unknown-unknown || echo "⚠ BPF target installation failed (non-critical)" && \
+    echo "✓ BPF target installed"
+
+# Copy dependency files and pre-compilation script into image
+# This allows us to discover and pre-compile all dependencies from actual project files
+COPY devops/precompile-dependencies.sh /usr/local/bin/precompile-dependencies.sh
+RUN chmod +x /usr/local/bin/precompile-dependencies.sh
+
+# Copy only source files and dependency manifests (Cargo.toml, Anchor.toml)
+# .dockerignore excludes target/, test-ledger/, and other large artifacts
+# This dramatically reduces build context size from ~42GB to a few MB
+COPY contracts/ /workspace/contracts/
+COPY services/ /workspace/services/
+COPY examples/ /workspace/examples/
+
+# Pre-compile all dependencies from discovered Anchor.toml and Cargo.toml files
+# This warms up sccache with all dependencies used across the codebase
+RUN set -e && \
+    export PATH="/root/.cargo/bin:/root/.local/share/solana/install/active_release/bin:${PATH}" && \
+    export RUSTC_WRAPPER=sccache && \
+    export CARGO_NET_GIT_FETCH_WITH_CLI=true && \
+    /usr/local/bin/precompile-dependencies.sh || echo "⚠ Some dependencies failed to pre-compile (non-critical, will compile during CI)"
+
+# Verify all installations are present
+# Note: Solana binary is x86_64 and may not run in ARM64 build context,
+# but will work correctly when container runs with proper platform/emulation
+# All tools are required dependencies - build will fail if any are missing
+RUN set -e && \
+    echo "Verifying installed tools..." && \
+    rustc --version && \
+    cargo --version && \
+    echo "✓ Rust toolchain verified" && \
+    \
+    if [ ! -f /root/.local/share/solana/install/active_release/bin/solana ]; then \
+    echo "❌ ERROR: Solana binary not found" && \
+    exit 1; \
+    fi && \
+    /root/.local/share/solana/install/active_release/bin/solana --version && \
+    echo "✓ Solana CLI verified" && \
+    \
+    ANCHOR_CMD=$(which anchor 2>/dev/null || find ~/.avm -name anchor -type f 2>/dev/null | head -1 || echo "") && \
+    if [ -z "$ANCHOR_CMD" ] || ! "$ANCHOR_CMD" --version > /dev/null 2>&1; then \
+    echo "❌ ERROR: Anchor CLI not found or not working" && \
+    echo "   Searched in PATH and ~/.avm directory" && \
+    exit 1; \
+    fi && \
+    "$ANCHOR_CMD" --version && \
+    echo "✓ Anchor CLI verified at $ANCHOR_CMD" && \
+    sccache --version && \
+    echo "✓ sccache verified" && \
+    echo "✓ All dependencies verified - build completed successfully"
+
+# Step 18: Remove compiled target directories to reduce image size
+# This is a separate step so Docker can cache the expensive pre-compilation step above
+# Target directories (~11GB+) are removed - CI will rebuild them quickly using sccache cache
+RUN echo "Removing compiled target directories to reduce image size..." && \
+    find /workspace -type d -name "target" -exec rm -rf {} + 2>/dev/null || true && \
+    echo "✓ Target directories removed" && \
+    echo "  Workspace size: $(du -sh /workspace 2>/dev/null | cut -f1 || echo '0')"
+
+# Step 19: Final cleanup - remove temporary files and large source files
+# Note: We preserve sccache cache and Cargo registry cache for faster CI builds
+RUN rm -rf /tmp/* /var/tmp/* && \
+    # Remove downloaded crate source files (keep compiled artifacts and sccache cache)
+    # Preserve /root/.cargo/registry/cache (contains compiled .rlib files - critical for fast builds)
+    # Only remove source files from registry/src, not the entire directory (some metadata needed)
+    find /root/.cargo/registry/src -type f -name "*.rs" -size +1M -delete 2>/dev/null || true && \
+    find /root/.cargo/git/db -type f -name "*.pack" -delete 2>/dev/null || true && \
+    echo "✓ Final cleanup complete (preserved sccache cache at /root/.cache/sccache and compiled artifacts at /root/.cargo/registry/cache)" && \
+    echo "  sccache cache size: $(du -sh /root/.cache/sccache 2>/dev/null | cut -f1 || echo '0')" && \
+    echo "  Registry cache size: $(du -sh /root/.cargo/registry/cache 2>/dev/null | cut -f1 || echo '0')" && \
+    echo "  Final workspace size: $(du -sh /workspace 2>/dev/null | cut -f1 || echo '0')"
+
+# Set working directory
+WORKDIR /workspace

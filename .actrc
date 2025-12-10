@@ -1,0 +1,9 @@
+# nektos-act configuration for local GitHub Actions testing
+# See: https://github.com/nektos/act
+
+# Using act-latest (already downloaded locally)
+# For smallest image, use: catthehacker/ubuntu:act-22.04 (when network available)
+-P ubuntu-latest=ghcr.io/gq-godark/gdx-golden-image:latest
+
+# Enable verbose output for debugging
+-v

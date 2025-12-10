@@ -1,0 +1,57 @@
+# Rust build artifacts - these are huge and not needed
+**/target/
+# Note: We keep Cargo.lock files as they ensure exact dependency versions
+
+# Solana test ledgers and validator data - very large
+**/test-ledger/
+**/validator*.log
+**/validator.pid
+**/validator-host.log
+**/rocksdb/
+**/*.tar.zst
+**/*.tar.bz2
+**/*.sst
+**/snapshots/
+**/accounts/
+**/genesis.bin
+**/genesis.tar.bz2
+**/*.rpc
+**/*-keypair.json
+**/tower-*.bin
+
+# Node modules (if any)
+**/node_modules/
+
+# IDE and editor files
+**/.vscode/
+**/.idea/
+**/*.swp
+**/*.swo
+**/.DS_Store
+
+# Git files
+**/.git/
+**/.gitignore
+**/.gitmodules
+
+# Documentation and assets (not needed for builds)
+**/docs/
+**/assets/
+**/*.md
+**/*.png
+**/*.jpg
+**/*.pdf
+**/*.svg
+
+# Other build artifacts
+**/dist/
+**/.next/
+**/build/
+**/out/
+
+# Keep only what we need:
+# - Cargo.toml files
+# - Anchor.toml files  
+# - Source code (src/, programs/, tests/)
+# - Configuration files needed for builds
+
